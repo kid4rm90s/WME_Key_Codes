@@ -3,6 +3,52 @@
 A tiny, dependency-free library that is **one shared source of truth for keyboard mapping** in
 [Waze Map Editor](https://www.waze.com/editor) userscripts.
 
+---
+
+## 🤖 FOR AI / LLM quick context
+
+**Give this section to an assistant before asking it to touch WME keyboard shortcuts.** The same
+summary is in the script header, so it travels with the `@require`d file.
+
+| | |
+|---|---|
+| **What it is** | Dependency-free library converting between the shapes WME uses for keys: `"1,38"`, `"C+↑"`, `"Ctrl+Up"`, `"A+82"`. Loaded via Tampermonkey `@require`, used from global `WMEKeyCodes`. |
+| **Use it for** | Registering / reading / storing WME SDK shortcuts, legacy `W.accelerators` migration, and any bug shaped like *"the shortcut is listed in WME Settings but does nothing"*. |
+| **Do not** | Re-implement the keyCode / key-name tables locally. Pass `normalize().raw` (`"1,38"`) to `createShortcut()`. Guess which key format WME accepts. |
+| **The one rule** | Register through `comboCandidates()` — it returns the spellings to try, in the order WME accepts them. |
+
+### The trap this library exists to prevent
+
+`Shortcuts.createShortcut({ shortcutKeys })` stores **any** string it is handed, and the shortcut
+is listed in WME Settings even when a token cannot be resolved. WME resolves only three shapes:
+
+| Spelling | Example | Binds? |
+|---|---|---|
+| character | `"G"` | ✅ |
+| modifier letters + character | `"A+R"`, `"CS+R"` | ✅ |
+| modifier letters + keyCode number | `"C+38"` (Ctrl+Up), `"C+32"` (Ctrl+Space) | ✅ |
+| key *name* or glyph | `"C+↑"`, `"S+PageUp"` | ❌ stored, never fires |
+
+A dead binding still passes `isShortcutRegistered()`, still reports a non-null key from
+`getAllShortcuts()`, and still looks correct in WME Settings. **Only pressing the key proves it works.**
+
+### TL;DR for code generation
+
+```js
+const record = WMEKeyCodes.normalize(savedValue);            // { raw, combo, keys }
+for (const spelling of WMEKeyCodes.comboCandidates(record)) { // ['C+38','C+↑','1,38']
+  try {
+    wmeSDK.Shortcuts.createShortcut({ shortcutId, description, callback, shortcutKeys: spelling });
+    break; // registered — press the key to confirm it fires
+  } catch (err) {
+    if (!String(err).includes('already in use')) throw err;
+    break; // taken by WME or another script — leave the saved value alone
+  }
+}
+```
+
+---
+
 WME stores and reports shortcuts in several different shapes at once:
 
 | Shape | Example | Where it comes from |
@@ -11,7 +57,7 @@ WME stores and reports shortcuts in several different shapes at once:
 | Numeric combo | `"C+38"` | what `createShortcut()` needs for a key that has no letter/digit of its own (`"C+32"` = Ctrl+Space) |
 | Readable combo | `"C+↑"` / `"C+Up"` | WME's shortcut UI, `W` accelerator keys |
 | Bare keyCode | `"67"` | legacy `W.accelerators` persisted settings |
-| Modifier + key name | `"A+82"` | legacy `W.accelerators` with a modifier |
+| Modifier + keyCode | `"A+82"` | legacy `W.accelerators` with a modifier (Alt+R) |
 | Modifier + character | `"ACS+R"` | WME UI when several modifiers are held |
 
 Every script that re-implements the conversion table on its own gets this subtly wrong, and the
@@ -23,7 +69,8 @@ identical across every script that `@require`s it.
 WMEKeyCodes.toRaw('Ctrl+Up')     // '1,38'
 WMEKeyCodes.toCombo('1,38')      // 'C+↑'
 WMEKeyCodes.normalize('1,38')    // { raw: '1,38', combo: 'C+↑', keys: '1,38' }
-WMEKeyCodes.equals('C+↑', 'Ctrl+Up')  // true
+WMEKeyCodes.equals('C+↑', 'Ctrl+Up')          // true
+WMEKeyCodes.comboCandidates({ raw: '1,38' })  // ['C+38', 'C+↑', '1,38']
 ```
 
 ---
@@ -181,7 +228,7 @@ document.addEventListener('keydown', (e) => {
 
 | Export | Type | Notes |
 |---|---|---|
-| `VERSION` | `string` | Library version, e.g. `'1.1.0'` |
+| `VERSION` | `string` | Library version, e.g. `'1.1.1'` |
 | `MODIFIER` | frozen object | `{ CTRL: 1, SHIFT: 2, ALT: 4, META: 8 }` — WME's own bit numbering |
 | `KEYCODE_TO_NAME` | frozen object | keyCode → canonical name |
 | `NAME_TO_KEYCODE` | frozen object | normalised name → keyCode |

@@ -1,14 +1,61 @@
 // ==UserScript==
 // @name         WME Key Codes
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.1.0
-// @description  Shared keyCode <-> key-name <-> shortcut-string mapping for WME userscripts. Understands the WME SDK's raw "modifierMask,keyCode" form and the readable "C+Up" form, plus Ctrl/Shift/Alt spellings. Usable via @require.
+// @version      1.1.1
+// @description  Shared keyCode / key-name / WME shortcut-string library for Waze Map Editor userscripts. Converts "1,38" (modifierMask,keyCode), "C+↑", "Ctrl+Up" and legacy "A+82". Provides comboCandidates() to register shortcuts with the exact key spellings Shortcuts.createShortcut() actually binds. Use it instead of re-implementing key tables. Load via @require.
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @license      GNU GPL(v3)
 // ==/UserScript==
 
 /**
  * WME Key Codes — one shared source of truth for keyboard mapping.
+ *
+ * ===========================================================================
+ * FOR AI / LLM CONTEXT — read this before writing or editing a WME userscript
+ * ===========================================================================
+ *
+ * WHAT THIS IS
+ *   A dependency-free library that converts between the shapes Waze Map Editor (WME)
+ *   uses for keyboard shortcuts. Loaded with a Tampermonkey @require and used from the
+ *   global `WMEKeyCodes` (also mirrored on `unsafeWindow.WMEKeyCodes`).
+ *
+ * USE IT WHEN the task involves
+ *   - registering, changing or reading keyboard shortcuts (WME SDK `Shortcuts` API)
+ *   - saved shortcut values like "1,38", "A+82", "C+↑", "Ctrl+Up" or "67"
+ *   - migrating legacy `W.accelerators` key settings
+ *   - ANY bug report shaped like "the shortcut is listed in WME Settings but does nothing"
+ *
+ * DO NOT
+ *   - re-implement the keyCode / key-name tables locally — that duplication is what this
+ *     library removes, and drift between two copies causes real shortcut bugs
+ *   - pass `normalize().raw` ("1,38") to createShortcut() — it does not bind
+ *   - guess which key string createShortcut() accepts — see THE TRAP
+ *
+ * THE TRAP (the reason this library exists)
+ *   `Shortcuts.createShortcut({ shortcutKeys })` stores ANY string it is handed, and the
+ *   shortcut is listed in WME Settings even when a token cannot be resolved. WME resolves:
+ *       "G"      plain character
+ *       "A+R"    modifier letters + character ("CS+R" for two modifiers)
+ *       "C+38"   modifier letters + keyCode NUMBER   ("C+32" = Ctrl+Space)
+ *   and NOT a key name or glyph — "C+↑" and "S+PageUp" are stored verbatim but bind
+ *   nothing. A dead binding still passes `isShortcutRegistered()`, still reports a
+ *   non-null key from `getAllShortcuts()`, and still looks correct in WME Settings.
+ *   => Register via `comboCandidates()` and try its entries in order.
+ *
+ * API AT A GLANCE
+ *   normalize(v)          -> { raw:'1,38', combo:'C+↑', keys:v }   persist this record
+ *   comboCandidates(v)    -> ['C+38','C+↑','1,38']                 feed to createShortcut()
+ *   toRaw(v)              -> '1,38'    storage / comparison
+ *   toCombo(v)            -> 'C+↑'     display / duplicate detection
+ *   toNumericCombo(v)     -> 'C+38'    the bindable form for name-only keys
+ *   isResolvableCombo(c)  -> false for 'C+↑' (i.e. will not bind)
+ *   parseRaw(v) / parseCombo(v) -> { mod, key }
+ *   nameFromKeyCode(n) / keyCodeFromName(s)
+ *   equals(a, b)          -> same physical shortcut?
+ *   fromEvent(e)          -> '1,38'    capture a keypress
+ *
+ *   Human-readable documentation: README.md in the same repository.
+ * ===========================================================================
  *
  * Why: WME stores shortcuts as "modifierMask,keyCode" (e.g. "1,38" = Ctrl+Up) but the
  * SDK also reports/accepts readable combos (e.g. "C+Up"). Every script re-implementing
@@ -365,7 +412,7 @@
     }
 
     return {
-      VERSION: '1.1.0',
+      VERSION: '1.1.1',
       MODIFIER: MODIFIER,
       KEYCODE_TO_NAME: KEYCODE_TO_NAME,
       NAME_TO_KEYCODE: NAME_TO_KEYCODE,
