@@ -7,7 +7,8 @@ WME stores and reports shortcuts in several different shapes at once:
 
 | Shape | Example | Where it comes from |
 |---|---|---|
-| Raw machine form | `"1,38"` | `SDK.Shortcuts.createShortcut({ shortcutKeys })`, `shortcut.originalShortcut` |
+| Raw machine form | `"1,38"` | what `shortcut.shortcutKeys` reports right after the user edits the key in WME's shortcut editor |
+| Numeric combo | `"C+38"` | what `createShortcut()` needs for a key that has no letter/digit of its own (`"C+32"` = Ctrl+Space) |
 | Readable combo | `"C+↑"` / `"C+Up"` | WME's shortcut UI, `W` accelerator keys |
 | Bare keyCode | `"67"` | legacy `W.accelerators` persisted settings |
 | Modifier + key name | `"A+82"` | legacy `W.accelerators` with a modifier |
@@ -119,13 +120,17 @@ keys.parseCombo('-1');      // null
 |---|---|---|
 | `toRaw(value)` | `"mod,keyCode"` or `null` | `toRaw('C+Up')` → `'1,38'` |
 | `toCombo(value)` | readable combo or `null` | `toCombo('1,38')` → `'C+↑'` |
+| `toNumericCombo(value)` | modifiers + keyCode number, or `null` | `toNumericCombo('1,38')` → `'C+38'` |
+| `isResolvableCombo(value)` | `true` when WME's editor parses the string as-is | `isResolvableCombo('C+↑')` → `false` |
+| `comboCandidates(value)` | ordered spellings to try with `createShortcut()` | `comboCandidates({ raw: '1,38' })` → `['C+38', 'C+↑', '1,38']` |
 
-Both accept a string **or** a `{ mod, key }` object, so you can chain them:
+All of them accept a string **or** a `{ mod, key }` object, so you can chain them:
 
 ```js
 const parsed = keys.parseCombo('Ctrl+Shift+R'); // { mod: 3, key: 82 }
 keys.toRaw(parsed);                             // '3,82'
 keys.toCombo(parsed);                           // 'CS+R'
+keys.toNumericCombo(parsed);                    // 'CS+82'
 ```
 
 ### Persistence and comparison
@@ -148,7 +153,7 @@ keys.normalize({ raw: '1,38', combo: 'C+↑', keys: '1,38' });
 
 | Field | Purpose |
 |---|---|
-| `raw` | `"mod,keyCode"` — **replay this into the SDK**. Machine form, never localised. |
+| `raw` | `"mod,keyCode"` — machine form, never localised. Use it for comparison and as the source of the spellings `comboCandidates()` hands to the SDK. |
 | `combo` | `"C+↑"` — display and duplicate detection. |
 | `keys` | The exact input string, preserved verbatim for lossless round-tripping. |
 
@@ -176,7 +181,7 @@ document.addEventListener('keydown', (e) => {
 
 | Export | Type | Notes |
 |---|---|---|
-| `VERSION` | `string` | Library version, e.g. `'1.0.1'` |
+| `VERSION` | `string` | Library version, e.g. `'1.1.0'` |
 | `MODIFIER` | frozen object | `{ CTRL: 1, SHIFT: 2, ALT: 4, META: 8 }` — WME's own bit numbering |
 | `KEYCODE_TO_NAME` | frozen object | keyCode → canonical name |
 | `NAME_TO_KEYCODE` | frozen object | normalised name → keyCode |
@@ -219,20 +224,48 @@ Always replay the **`raw`** form. Handing the SDK a display combo means your bin
 the page reloads and then quietly disappears.
 
 ```js
-keys.normalize(savedValue).raw; // '1,38' — what the SDK wants
+keys.normalize(savedValue).combo; // 'C+↑' — display form, but see the gotcha below
 ```
 
 ```js
-const stored = getMySavedShortcut('increaseElevation');
-const record = keys.normalize(stored);
+const record = keys.normalize(getMySavedShortcut('increaseElevation'));
 
-wmeSDK.Shortcuts.createShortcut({
-  shortcutId: 'MyScript_IncreaseElevation',
-  description: 'Increase elevation',
-  callback: () => adjustElevation(1),
-  shortcutKeys: record.raw,   // '1,38' — NOT record.combo
-});
+// Try each spelling, keep the first that WME actually binds.
+for (const spelling of keys.comboCandidates(record)) {
+  try {
+    wmeSDK.Shortcuts.createShortcut({
+      shortcutId: 'MyScript_IncreaseElevation',
+      description: 'Increase elevation',
+      callback: () => adjustElevation(1),
+      shortcutKeys: spelling,
+    });
+    break; // registered - press the key to confirm it fires
+  } catch (err) {
+    if (!String(err).includes('already in use')) throw err;
+    break; // taken by WME or another script - leave the saved value alone
+  }
+}
 ```
+
+### ⚠️ The `createShortcut()` trap
+
+**Passing the wrong spelling produces a shortcut that is visible but dead.**
+
+WME stores whatever string you hand it and lists the result in
+Settings → Keyboard Shortcuts. It resolves exactly two shapes:
+
+| Shape | Example | Binds? |
+|---|---|---|
+| optional modifier prefix + one character | `"G"`, `"A+R"`, `"CS+R"`, `"C+8"` | ✅ |
+| optional modifier prefix + keyCode **number** | `"C+32"` (Ctrl+Space), `"C+38"` (Ctrl+Up) | ✅ |
+| modifier prefix + key *name* or glyph | `"C+↑"`, `"S+PageUp"` | ❌ stored, never fires |
+
+`isResolvableCombo()` tells you which column you are in, and `comboCandidates()` already
+applies the right order — numeric form first when the readable form carries a key name.
+
+**You cannot detect the failure through the SDK.** A dead binding still passes
+`isShortcutRegistered()`, still reports a non-null key from `getAllShortcuts()`, and still
+looks correct in the settings UI. Only pressing the key proves it works.
 
 ### Reading what someone actually pressed
 

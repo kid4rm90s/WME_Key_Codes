@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WME Key Codes
 // @namespace    https://greasyfork.org/users/1087400
-// @version      1.0.1
+// @version      1.1.0
 // @description  Shared keyCode <-> key-name <-> shortcut-string mapping for WME userscripts. Understands the WME SDK's raw "modifierMask,keyCode" form and the readable "C+Up" form, plus Ctrl/Shift/Alt spellings. Usable via @require.
 // @author       https://greasyfork.org/en/users/1087400-kid4rm90s
 // @license      GNU GPL(v3)
@@ -22,9 +22,21 @@
  *   keys.nameFromKeyCode(38);                       // '↑'
  *   keys.toRaw('C+Up');                             // '1,38'
  *   keys.toCombo('1,38');                           // 'C+↑'
+ *   keys.toNumericCombo('1,38');                    // 'C+38'
  *   keys.normalize('1,38');                         // { raw, combo, keys }
  *   keys.fromEvent(keydownEvent);                   // '1,38'
  *   keys.equals('C+↑', 'Ctrl+Up');                  // true
+ *   keys.comboCandidates({ raw: '1,38' });          // ['C+38', 'C+↑', '1,38']
+ *
+ * Registering a shortcut — read this before calling createShortcut()
+ *   createShortcut() stores the string it is handed and the shortcut is listed in WME
+ *   Settings even when a token cannot be resolved, so a bad spelling yields a shortcut
+ *   that is visible but never fires. WME resolves an optional modifier prefix plus ONE
+ *   letter or digit ("G", "A+R", "CS+R", "C+8") and nothing else: a key NAME such as
+ *   "C+↑" or "S+PageUp" is stored verbatim but binds no key. Use comboCandidates() and
+ *   try them in order, keeping the first that binds — note that a dead binding is
+ *   indistinguishable from a working one through getAllShortcuts(); only pressing the
+ *   key proves it.
  *
  * Format notes
  *   - Modifier mask bits: Ctrl=1, Shift=2, Alt=4 (WME's own numbering). Meta=8 is
@@ -236,7 +248,8 @@
       return { mod: mod, key: key };
     }
 
-    /** Anything we understand -> "mod,keyCode" (the form to replay into the SDK). */
+    /** Anything we understand -> "mod,keyCode". Storage and comparison form, NOT what
+     *  createShortcut() accepts - see comboCandidates(). */
     function toRaw(value) {
       const parsed = value !== null && typeof value === 'object' && typeof value.key === 'number'
         ? value
@@ -258,8 +271,68 @@
     }
 
     /**
+     * Anything we understand -> numeric combo ("C+38"): modifiers as letters and the key
+     * as its keyCode NUMBER. This is the spelling WME resolves for a key that has no
+     * character of its own - the same shape WME's own SDK examples use
+     * ("C+32" = Ctrl+Space). See isResolvableCombo() for why it is needed.
+     */
+    function toNumericCombo(value) {
+      const parsed = value !== null && typeof value === 'object' && typeof value.key === 'number'
+        ? value
+        : (parseCombo(value) || parseRaw(value));
+      if (!parsed) return null;
+      let letters = '';
+      MODIFIER_LETTERS.forEach((pair) => {
+        if (parsed.mod & pair[0]) letters += pair[1];
+      });
+      return (letters ? letters + '+' : '') + parsed.key;
+    }
+
+    /**
+     * True when the readable combo is made only of tokens WME resolves on its own:
+     * an optional modifier prefix plus one letter/digit ("G", "A+R", "CS+R", "C+8")
+     * or plus a 2+ digit keyCode ("C+38", "C+32").
+     *
+     * A combo carrying a key NAME ("C+↑", "S+PageUp") tests false. WME still accepts
+     * the string and shows it in Settings, but no key is bound, so such a combo has to
+     * be registered through toNumericCombo() instead.
+     */
+    function isResolvableCombo(value) {
+      return typeof value === 'string' && /^(?:[CSAM]{1,3}\+)?(?:[0-9A-Z]|\d{2,})$/.test(value);
+    }
+
+    /**
+     * Ordered list of spellings to try with Shortcuts.createShortcut(), best first:
+     *   - a resolvable combo ("G", "A+R") is what WME binds for letter/digit keys, so
+     *     it goes first;
+     *   - otherwise the numeric combo ("C+38") goes first, because the readable form
+     *     ("C+↑") would register a shortcut that never fires;
+     *   - the raw machine form ("1,38") is the last resort.
+     *
+     * Unrecognised values yield an empty list - there is nothing safe to register.
+     * Accepts a normalize() record, a single string, or null/undefined.
+     */
+    function comboCandidates(value) {
+      const isObject = value !== null && typeof value === 'object';
+      const source = isObject ? (value.raw ?? value.combo ?? value.keys) : value;
+      const raw = toRaw(source);
+      const combo = toCombo(raw);
+      const candidates = [];
+      const push = (candidate) => {
+        if (typeof candidate !== 'string' || candidate === '') return;
+        if (EMPTY_VALUES.has(candidate.toLowerCase())) return;
+        if (candidates.indexOf(candidate) === -1) candidates.push(candidate);
+      };
+      if (!isResolvableCombo(combo)) push(toNumericCombo(raw));
+      push(combo);
+      push(raw);
+      return candidates;
+    }
+
+    /**
      * Canonical persistence record used by shortcut storage.
-     *   raw   "mod,keyCode" — machine form, prefer when replaying into the SDK
+     *   raw   "mod,keyCode" — machine form, used for comparison and to derive the
+     *         spellings createShortcut() may accept (see comboCandidates)
      *   combo "C+↑"         — human form, used for duplicate detection/display
      *   keys                — the exact input string, preserved for lossless replay
      */
@@ -292,7 +365,7 @@
     }
 
     return {
-      VERSION: '1.0.1',
+      VERSION: '1.1.0',
       MODIFIER: MODIFIER,
       KEYCODE_TO_NAME: KEYCODE_TO_NAME,
       NAME_TO_KEYCODE: NAME_TO_KEYCODE,
@@ -302,6 +375,9 @@
       parseCombo: parseCombo,
       toRaw: toRaw,
       toCombo: toCombo,
+      toNumericCombo: toNumericCombo,
+      isResolvableCombo: isResolvableCombo,
+      comboCandidates: comboCandidates,
       normalize: normalize,
       equals: equals,
       fromEvent: fromEvent,
